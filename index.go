@@ -10,6 +10,8 @@ import (
 	"os"
 )
 
+const defaultErrorString = "Internal Server Error"
+
 type person struct {
 	Name   string `json:"name"`
 	Height int    `json:"height"`
@@ -18,7 +20,8 @@ type person struct {
 
 type addPersonAction struct {
 	Group  string
-	Person *person `json:"omitempty"`
+	Person *person
+	// Using pointer as to make this value null if not provided in input.
 }
 
 type getAction struct {
@@ -39,16 +42,6 @@ type apiResponse struct {
 	Message string `json:"message"`
 }
 
-// func decodeActionFromJson(req *http.Request) AddPersonAction {
-// 	decoder := json.NewDecoder(req.Body)
-// 	var t AddPersonAction
-// 	err := decoder.Decode(&t)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	return t
-// }
-
 func handleAddObject(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	var action addPersonAction
@@ -56,46 +49,43 @@ func handleAddObject(w http.ResponseWriter, r *http.Request) {
 
 	if decodeError != nil || len(action.Group) == 0 ||
 		action.Person == nil || len(action.Person.Name) == 0 {
-		configureFailureResponse(&w, "Invalid input format")
+		sendFailureResponse(&w, "Invalid input format")
 		return
 	}
 
 	groupName := action.Group
-	if _, err := os.Stat(groupName); err != nil {
-		groupsFile, err := os.OpenFile("groups", os.O_APPEND|os.O_WRONLY, 0644)
-		if err == nil {
-			_, err2 := groupsFile.WriteString(groupName + ", ")
-			if err != nil {
-				fmt.Println(err2)
-			}
-			groupsFile.Sync()
-			groupsFile.Close()
-		} else {
-			configureFailureResponse(&w, "Interal Server Error")
-			return
-		}
+	groupsFile, groupFileError := os.OpenFile("groups", os.O_APPEND|os.O_WRONLY, 0644)
+	if groupFileError == nil {
+		groupsFile.WriteString(groupName + ", ")
+		groupsFile.Sync()
+		groupsFile.Close()
+	} else {
+		sendFailureResponse(&w, defaultErrorString)
+		return
 	}
 
 	var groupMap map[string]person
 	byteValue, _ := ioutil.ReadFile(groupName)
 	err := json.Unmarshal(byteValue, &groupMap)
-	if err != nil {
-		groupMap = make(map[string]person)
+	if err == nil {
+		if len(groupMap) == 0 {
+			groupMap = make(map[string]person)
+		}
 	} else {
-		configureFailureResponse(&w, "Interal Server Error")
+		sendFailureResponse(&w, "Interal Server Error")
 		return
 	}
+
 	p := action.Person
 	groupMap[action.Person.Name] = *p
 	personString, _ := json.Marshal(groupMap)
 	ioutil.WriteFile(groupName, personString, 0644)
 
-	configureSuccessResponse(&w, action.Person.Name+" added to group "+groupName)
+	sendSuccessResponse(&w, action.Person.Name+" added to group "+groupName)
 	return
 }
 
 func handleDeleteObject(w http.ResponseWriter, r *http.Request) {
-	// Delete the group if it was the last object in the group
 	decoder := json.NewDecoder(r.Body)
 	var action deletePersonAction
 	decodeError := decoder.Decode(&action)
@@ -103,15 +93,15 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 
 	if decodeError != nil || len(action.Group) == 0 ||
 		len(action.Person) == 0 {
-		configureFailureResponse(&w, "Invalid input format")
+		sendFailureResponse(&w, "Invalid input format")
 		return
 	}
 
-	if _, err := os.Stat(groupName); err != nil {
+	if _, err := os.Stat(groupName); err == nil {
 		var f2map map[string]person
 		byteValue, _ := ioutil.ReadFile(groupName)
 		err := json.Unmarshal(byteValue, &f2map)
-		if err != nil {
+		if err == nil {
 			f2map = make(map[string]person)
 		}
 		// read map
@@ -119,23 +109,62 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 		personString, _ := json.Marshal(f2map)
 		ioutil.WriteFile(groupName, personString, 0644)
 	} else {
-		configureFailureResponse(&w, "Internal Server Error")
+		sendFailureResponse(&w, defaultErrorString)
 		return
 	}
-	configureSuccessResponse(&w, "Deleted "+action.Person+" from "+action.Group)
+
+	// TODO: Delete the group if it was the last object in the group
+
+	sendSuccessResponse(&w, "Deleted "+action.Person+" from "+action.Group)
 }
 
 func handleGetAllObjects(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	var action getAction
+	decodeError := decoder.Decode(&action)
+	groupName := action.Group
 
+	if decodeError != nil || len(action.Group) == 0 {
+		sendFailureResponse(&w, "No group specified")
+		return
+	}
+
+	if _, err := os.Stat(groupName); err == nil {
+		var f2map map[string]person
+		byteValue, _ := ioutil.ReadFile(groupName)
+		json.Unmarshal(byteValue, &f2map)
+		personString, _ := json.Marshal(f2map)
+		sendSuccessResponse(&w, string(personString))
+	} else {
+		fmt.Println(err)
+		sendFailureResponse(&w, "Group does not exist")
+		return
+	}
 }
 
 func handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	var action deletePersonAction
+	decodeError := decoder.Decode(&action)
+	groupName := action.Group
 
+	if decodeError != nil || len(action.Group) == 0 {
+		sendFailureResponse(&w, "No group specified.")
+		return
+	}
+
+	err := os.Remove(groupName)
+
+	if err == nil {
+		sendSuccessResponse(&w, "Successfully deleted "+groupName)
+	} else {
+		sendFailureResponse(&w, defaultErrorString)
+	}
 }
 
 func main() {
 	// Check if groups file exist and create it if it doesn't
-	if _, err := os.Stat("groups"); err != nil {
+	if _, err := os.Stat("groups.json"); err != nil {
 		os.Create("groups")
 	}
 
@@ -146,7 +175,8 @@ func main() {
 	http.ListenAndServe(":8080", nil)
 }
 
-func configureSuccessResponse(w *http.ResponseWriter, message string) {
+// Helper Function to send a HTTP Success Response
+func sendSuccessResponse(w *http.ResponseWriter, message string) {
 	response := apiResponse{"success", message}
 	res, err := json.Marshal(response)
 
@@ -160,7 +190,8 @@ func configureSuccessResponse(w *http.ResponseWriter, message string) {
 	(*w).Write(res)
 }
 
-func configureFailureResponse(w *http.ResponseWriter, message string) {
+// Helper Function to send a HTTP Failure Response
+func sendFailureResponse(w *http.ResponseWriter, message string) {
 	response := apiResponse{"failure", message}
 	res, err := json.Marshal(response)
 
