@@ -136,7 +136,6 @@ func handleGetAllObjects(w http.ResponseWriter, r *http.Request) {
 		personString, _ := json.Marshal(f2map)
 		sendSuccessResponse(&w, string(personString))
 	} else {
-		fmt.Println(err)
 		sendFailureResponse(&w, "Group does not exist")
 		return
 	}
