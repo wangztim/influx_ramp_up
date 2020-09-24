@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strings"
 )
 
 const defaultErrorString = "Internal Server Error"
@@ -53,28 +54,42 @@ func handleAddObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+
+	// Handle if the group doesn't exist
 	groupName := action.Group
-	groupsFile, groupFileError := os.OpenFile("groups", os.O_APPEND|os.O_WRONLY, 0644)
-	if groupFileError == nil {
-		groupsFile.WriteString(groupName + ", ")
-		groupsFile.Sync()
-		groupsFile.Close()
-	} else {
-		sendFailureResponse(&w, defaultErrorString)
+	if groupName == "groups" {
+		sendFailureResponse(&w, "Pick a different group name please")
 		return
 	}
 
+
+	if _, err := os.Stat(groupName); err != nil {
+		// Write to groups file
+		groupsFile, groupFileError := os.OpenFile("groups", os.O_APPEND|os.O_WRONLY, 0644)
+		if groupFileError == nil {
+			groupsFile.WriteString(groupName + "\n")
+			groupsFile.Sync()
+			groupsFile.Close()
+		} else {
+			sendFailureResponse(&w, "Couldn't open groups file")
+			return
+		}
+		// Create groupName file 
+		os.Create(groupName)
+	}
+
+	// Read the data from the groupName file as a map
 	var groupMap map[string]person
 	byteValue, _ := ioutil.ReadFile(groupName)
 	err := json.Unmarshal(byteValue, &groupMap)
-	if err == nil {
+	if err != nil {
 		if len(groupMap) == 0 {
 			groupMap = make(map[string]person)
+		} else {
+			sendFailureResponse(&w, "Couldn't open " + groupName + " file" + err.Error())
+			return
 		}
-	} else {
-		sendFailureResponse(&w, "Interal Server Error")
-		return
-	}
+	} 
 
 	p := action.Person
 	groupMap[action.Person.Name] = *p
@@ -98,24 +113,36 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := os.Stat(groupName); err == nil {
-		var f2map map[string]person
+		var groupMap map[string]person
 		byteValue, _ := ioutil.ReadFile(groupName)
-		err := json.Unmarshal(byteValue, &f2map)
-		if err == nil {
-			f2map = make(map[string]person)
+		err := json.Unmarshal(byteValue, &groupMap)
+		if err != nil {
+			groupMap = make(map[string]person)
 		}
-		// read map
-		delete(f2map, action.Person)
-		personString, _ := json.Marshal(f2map)
-		ioutil.WriteFile(groupName, personString, 0644)
+
+		if _, ok := groupMap[action.Person]; ok {
+			fmt.Println("before", groupMap, len(groupMap))
+			delete(groupMap, action.Person) 
+			personString, _ := json.Marshal(groupMap)
+			ioutil.WriteFile(groupName, personString, 0644)
+
+			// Delete the group if it was the last object in the group
+			fmt.Println("after", groupMap, len(groupMap))
+			if len(groupMap) == 0 {
+				DeleteGroup(groupName, w)
+			}
+
+		} else {
+			sendFailureResponse(&w, action.Person + " not in group " + action.Group)
+			return
+		}
+
 	} else {
-		sendFailureResponse(&w, defaultErrorString)
+		sendFailureResponse(&w, "Group " + action.Group + " doesn't exist")
 		return
 	}
 
-	// TODO: Delete the group if it was the last object in the group
-
-	sendSuccessResponse(&w, "Deleted "+action.Person+" from "+action.Group)
+	sendSuccessResponse(&w, "Deleted " + action.Person + " from " + action.Group)
 }
 
 func handleGetAllObjects(w http.ResponseWriter, r *http.Request) {
@@ -130,10 +157,10 @@ func handleGetAllObjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := os.Stat(groupName); err == nil {
-		var f2map map[string]person
+		var groupMap map[string]person
 		byteValue, _ := ioutil.ReadFile(groupName)
-		json.Unmarshal(byteValue, &f2map)
-		personString, _ := json.Marshal(f2map)
+		json.Unmarshal(byteValue, &groupMap)
+		personString, _ := json.Marshal(groupMap)
 		sendSuccessResponse(&w, string(personString))
 	} else {
 		sendFailureResponse(&w, "Group does not exist")
@@ -144,6 +171,7 @@ func handleGetAllObjects(w http.ResponseWriter, r *http.Request) {
 func handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	var action deletePersonAction
+	
 	decodeError := decoder.Decode(&action)
 	groupName := action.Group
 
@@ -152,18 +180,38 @@ func handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := os.Remove(groupName)
+	DeleteGroup(groupName, w)
 
-	if err == nil {
-		sendSuccessResponse(&w, "Successfully deleted "+groupName)
-	} else {
-		sendFailureResponse(&w, defaultErrorString)
+	sendSuccessResponse(&w, "Deleted " + groupName)
+
+}
+
+func DeleteGroup(groupName string, w http.ResponseWriter) {
+	// remove groupName file
+	err := os.Remove(groupName)
+	if err != nil {
+		sendFailureResponse(&w, "Couldn't remove " + groupName)
+		return
 	}
+
+	// remove from groups file
+	byteValue, err2 := ioutil.ReadFile("groups")
+	groupsContent := string(byteValue)
+	if err2 != nil {
+			sendFailureResponse(&w, "Couldn't open groups file: " + err.Error())
+			return
+	}
+	
+	groupsContent = strings.ReplaceAll(groupsContent, groupName + "\n", "")
+	// rewrite to groups file
+	os.Remove("groups")
+	ioutil.WriteFile("groups", []byte(groupsContent), 0644)
+
 }
 
 func main() {
 	// Check if groups file exist and create it if it doesn't
-	if _, err := os.Stat("groups.json"); err != nil {
+	if _, err := os.Stat("groups"); err != nil {
 		os.Create("groups")
 	}
 
